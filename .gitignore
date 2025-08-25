@@ -1,0 +1,6 @@
+keys.env
+.env
+*.pdf
+test_document.*
+__pycache__/
+*.pyc

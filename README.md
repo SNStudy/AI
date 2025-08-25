@@ -5,6 +5,7 @@ This repository contains testing implementations for evaluating different establ
 ## Purpose
 
 We are systematically testing and comparing AI model performance for:
+- Document sectioning
 - Document summarization
 - Note generation  
 - Quiz card creation
@@ -14,4 +15,3 @@ We are systematically testing and comparing AI model performance for:
 ## Goal
 
 Compare output quality, accuracy, educational value, and performance metrics across different AI providers to determine the optimal model selection for our learning platform.
-

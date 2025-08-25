@@ -1,0 +1,213 @@
+import os
+import PyPDF2
+import google.generativeai as genai
+from dotenv import load_dotenv
+import re
+
+load_dotenv('keys.env')
+
+def read_pdf(file_path):
+    with open(file_path, 'rb') as file:
+        reader = PyPDF2.PdfReader(file)
+        text = ""
+        for i, page in enumerate(reader.pages, 1):
+            text += f"\n--- PAGE {i} ---\n" + page.extract_text() + "\n"
+        return text.strip()
+
+def read_txt(file_path):
+    with open(file_path, 'r', encoding='utf-8') as file:
+        return file.read().strip()
+
+def get_sections(content, num_sections=None):
+    genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    section_control = f"\n### Section Count Control:\nDivide the text into exactly {num_sections} top-level sections, using the document's own structure as much as possible. Subsections should still be extracted within them.\n" if num_sections else ""
+    
+    prompt = f"""
+You are an expert document analyst. Your task is NOT to summarize or explain content, 
+but to segment the provided text corpus into thematic **sections and subsections**.
+
+The input may consist of one or multiple documents, possibly with inconsistent formatting. 
+Each document can have multiple pages, and sections/subsections may span across different pages 
+and even reappear in non-contiguous places.
+
+### Rules for Section & Subsection Identification:
+1. **Prefer the document's own structure when possible**:
+   - If the introduction, table of contents, or early pages contain an outline or section structure, 
+     use those headings, section numbers, and subsection numbers as the primary framework.
+   - If explicit numbering exists (e.g., "1. Introduction", "2.1 Data Collection"), follow it exactly.
+2. If no clear structure exists, or if gaps appear, infer descriptive section/subsection names based on content flow.
+3. A section or subsection may reappear across non-contiguous pages (e.g., "Methods" on pages 2–5 and again on page 7). 
+   Always merge them under the same entry.
+{section_control}
+### Your Tasks:
+1. Cover the entire text — every line must belong to exactly one section or subsection.
+2. For each **section and subsection**, output:
+   - **Section/Subsection Name** (prefer source document titles; infer only if necessary).
+   - **Page Range(s)** where it appears.
+   - **Line Range(s)** (start → end line per page where it occurs).
+   - If a section/subsection spans multiple intervals, list all intervals clearly.
+
+### Output Format
+Return a structured list ONLY, no summaries or commentary. Example:
+
+## Section Breakdown
+- Section: "1. Introduction"
+  - Pages: 1–2
+  - Lines: 1–38
+
+- Section: "2. Search Algorithms"
+  - Pages: 2–7
+  - Lines: 39–149
+  - Subsections:
+    - Subsection: "2.1 Linear Search"
+      - Pages: 2–3
+      - Lines: 39–72
+    - Subsection: "2.2 Binary Search"
+      - Pages: 4–5, 7
+      - Lines: 73–128 (pp.4–5), 120–149 (p.7)
+
+- Section: "3. Binary Trees"
+  - Pages: 8–10
+  - Lines: 150–210
+
+Text to analyze: {content}"""
+    
+    return model.generate_content(prompt).text
+
+def parse_sections(content, response):
+    lines = content.split('\n')
+    sections = {}
+    
+    blocks = re.split(r'- Section:', response)[1:]
+    
+    if not blocks:
+        # Equal split fallback
+        chunk_size = len(lines) // 3
+        for i in range(3):
+            start = i * chunk_size
+            end = start + chunk_size if i < 2 else len(lines)
+            sections[f"Section {i + 1}"] = '\n'.join(lines[start:end])
+        return sections
+    
+    for block in blocks:
+        name_match = re.search(r'"([^"]+)"', block)
+        if not name_match:
+            continue
+        
+        name = name_match.group(1)
+        line_ranges = re.findall(r'Lines:\s*(\d+)[-–](\d+)', block)
+        
+        if line_ranges:
+            content_lines = []
+            for start, end in line_ranges:
+                start_idx = max(0, int(start) - 1)
+                end_idx = min(len(lines), int(end))
+                content_lines.extend(lines[start_idx:end_idx])
+            sections[name] = '\n'.join(content_lines)
+        else:
+            # Try page ranges
+            page_ranges = re.findall(r'Pages:\s*(\d+)[-–](\d+)', block)
+            if page_ranges:
+                content_lines = []
+                for start_page, end_page in page_ranges:
+                    in_range = False
+                    for line in lines:
+                        if f"--- PAGE {start_page} ---" in line:
+                            in_range = True
+                        elif f"--- PAGE {int(end_page) + 1} ---" in line:
+                            in_range = False
+                        elif in_range:
+                            content_lines.append(line)
+                sections[name] = '\n'.join(content_lines)
+            else:
+                sections[name] = ""
+    
+    # If empty sections, fall back to equal split
+    if not any(sections.values()):
+        chunk_size = len(lines) // len(sections)
+        section_names = list(sections.keys())
+        for i, name in enumerate(section_names):
+            start = i * chunk_size
+            end = start + chunk_size if i < len(section_names) - 1 else len(lines)
+            sections[name] = '\n'.join(lines[start:end])
+    
+    return sections
+
+def make_notes(text, section_name):
+    genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    prompt = f"""
+You are an expert academic tutor creating comprehensive study notes for final exam preparation. 
+Your task is to transform the provided text section into detailed, well-organized study notes.
+
+**Section: {section_name}**
+
+### Instructions:
+1. **Comprehensive Coverage**: Include ALL important information, concepts, definitions, processes, examples, and details from the text
+2. **Clear Organization**: Structure the notes with proper headings, subheadings, and logical flow
+3. **Study-Friendly Format**: Present information in a way that facilitates memorization and understanding
+4. **Connections**: Highlight relationships between concepts, cause-and-effect relationships, and how different elements connect
+5. **Key Points Emphasis**: Use formatting to emphasize crucial information students must remember
+6. **No External Sources**: Base notes ONLY on the provided text content
+7. **Markdown Formatting**: Use proper markdown formatting including:
+   - Headers (# ## ###)
+   - Bold and italic text for emphasis
+   - Bullet points and numbered lists
+   - Code blocks if applicable
+   - Tables when useful for organization
+
+### Study Notes Structure:
+- Start with a brief overview of the section
+- Break down into logical subsections
+- Include key concepts, definitions, and terminology
+- Provide detailed explanations of processes or methods
+- List important facts, figures, or examples
+- End with key takeaways or summary points
+
+### Output Requirements:
+- Make the notes comprehensive enough that a student could study for finals using ONLY these notes
+- Ensure every significant piece of information from the source text is captured
+- Present information clearly and concisely while maintaining completeness
+- Use proper academic language and terminology
+
+**Text content to create study notes from:**
+{text}
+"""
+    
+    return model.generate_content(prompt).text
+
+def save_notes(notes, filename="study_notes.md"):
+    with open(filename, 'w', encoding='utf-8') as f:
+        for section_name, content in notes.items():
+            f.write(f"# {section_name}\n\n")
+            f.write(content)
+            f.write("\n\n---\n\n")
+
+def main():
+    file_path = input("Filepath: ").strip()
+    
+    content = read_pdf(file_path) if file_path.lower().endswith('.pdf') else read_txt(file_path)
+    
+    sections_choice = input("Sections? Y/N: ").strip().upper()
+    num_sections = int(input("Amount: ").strip()) if sections_choice == 'Y' else None
+    
+    print("Sending to Gemini...")
+    response = get_sections(content, num_sections)
+    print("Response received:")
+    print(response)
+    
+    if input("\nGemini response received. Create notes? Y/N: ").strip().upper() == 'Y':
+        sections = parse_sections(content, response)
+        notes = {}
+        
+        for name, text in sections.items():
+            notes[name] = make_notes(text, name)
+        
+        save_notes(notes)
+        print("Study notes saved")
+
+if __name__ == "__main__":
+    main()

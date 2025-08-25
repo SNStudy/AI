@@ -4,3 +4,5 @@ keys.env
 test_document.*
 __pycache__/
 *.pyc
+.vscode/
+study_notes.md
